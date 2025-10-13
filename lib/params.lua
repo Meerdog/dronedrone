@@ -12,160 +12,80 @@ end
 
 function Params.setup(ctx)
   params:clear()
-
-  ----------------------------------------------------------
-  -- Demo Presets
-  ----------------------------------------------------------
-
-  local util = require "util"
-
-  -- ---------- Demo preset helpers ----------
-  local function _snapshot_params()
-    local snap = {}
-    for i = 1, params.count do
-      snap[i] = params:get(i)
-    end
-    return snap
-  end
-
-  local function _restore_params(snap)
-    for i = 1, params.count do
-      if snap[i] ~= nil then params:set(i, snap[i]) end
-    end
-  end
-
-  local function _set(id, v)
-    -- Safe setter by id string (uses params.lookup)
-    if params.lookup and params.lookup[id] then
-      params:set(params.lookup[id], v)
-    end
-  end
-
-  local function _paths()
-    local base = norns.state.data
-    util.make_dir(base)
-    return {
-      flag       = base .. "presets_installed.flag",
-      lfo_reso   = base .. "preset_lfo_reso.pset",
-      lfo_pan    = base .. "preset_lfo_pan.pset",
-      beats_dual = base .. "preset_beats_dual.pset",
-    }
-  end
-
-  local function _write_pset(path)
-    util.make_dir(norns.state.data)
-    params:write(path)
-    print("wrote preset → " .. path)
-  end
-
-  local function install_demo_presets_once()
-    local p = _paths()
-    if util.file_exists(p.flag) then
-      print("demo presets already installed")
-      return
-    end
-
-    local snap = _snapshot_params()
-
-    ----------------------------------------------------------
-    -- Preset 1: "lfo_reso_demo"  (obvious resonant wobble)
-    ----------------------------------------------------------
-    _set("beat1_run", 1); _set("beat2_run", 1)  -- keep beats off
-    _set("lfo_on", 2)         -- on
-    _set("lfo_target", 1)     -- Res
-    _set("lfo_wave", 1)       -- Sine
-    _set("lfo_freq", 0.4)
-    _set("lfo_depth", 0.85)
-    _set("fx_cutoff", 2500)
-    _set("fx_reson", 0.45)
-    _set("sub_level", 0.0)
-    _write_pset(p.lfo_reso)
-
-    ----------------------------------------------------------
-    -- Preset 2: "lfo_pan_demo"  (clear left/right sweep)
-    ----------------------------------------------------------
-    _set("lfo_on", 2)
-    _set("lfo_target", 3)   -- Pan (requires engine.setPanRange)
-    _set("lfo_wave", 2)     -- Tri
-    _set("lfo_freq", 0.25)
-    _set("lfo_depth", 1.00)
-    _set("Amix", 1.0); _set("Bmix", 1.0)
-    _set("fx_cutoff", 6000)
-    _set("fx_reson", 0.20)
-    _set("sub_level", 0.25)
-    _write_pset(p.lfo_pan)
-
-    ----------------------------------------------------------
-    -- Preset 3: "beats_dual_demo"  (two contrasting Euclids)
-    ----------------------------------------------------------
-    _set("lfo_on", 1)
-    -- Beat 1
-    _set("beat1_steps", 16); _set("beat1_fills", 5); _set("beat1_rotate", 0)
-    _set("beat1_div", 3)     -- 1/4
-    _set("beat1_tune", 48); _set("beat1_decay", 0.60); _set("beat1_amp", 0.95)
-    _set("beat1_run", 1)
-    -- Beat 2
-    _set("beat2_steps", 16); _set("beat2_fills", 9); _set("beat2_rotate", 0)
-    _set("beat2_div", 4)     -- 1/8
-    _set("beat2_tune", 55); _set("beat2_decay", 0.45); _set("beat2_amp", 0.85)
-    _set("beat2_run", 1)
-    _write_pset(p.beats_dual)
-
-    _restore_params(snap)
-
-    local f = io.open(p.flag, "w"); if f then f:write("ok"); f:close() end
-    print("demo presets installed (once)")
-  end
-
-  local function load_demo_preset(choice_index)
-    -- choice_index: 1 = "—", 2 = LFO Reso, 3 = LFO Pan, 4 = Beats Dual
-    local p = _paths()
-    local map = { [2]=p.lfo_reso, [3]=p.lfo_pan, [4]=p.beats_dual }
-    local file = map[choice_index]
-    if not file then return end
-
-    local ok, err = pcall(function()
-      params:read(file)
-      params:bang()
-    end)
-    if not ok then print("load preset failed: " .. (err or "?")) end
-  end
-
+  
   ----------------------------------------------------------------
-  -- GROUP 0: DEMO PRESETS  (5 params)
-  ----------------------------------------------------------------
-  params:add_group("DEMO PRESETS", 5)
+-- GROUP X: Musical Presets  (1 param)
+----------------------------------------------------------------
+params:add_group("Musical Presets", 1)
 
-  -- 1) Write demo .pset files into dust/data/dronedrone (once)
-  params:add_trigger("preset_install", "Install demo presets")
-  params:set_action("preset_install", function()
-    install_demo_presets_once()
-  end)
+-- helper: apply a table of fields to a drone; if it’s running, relaunch it
+local function _set_drone(slot, t)
+  if not ctx or not ctx.drones_settings or not ctx.drones_settings[slot] then return end
+  local s = ctx.drones_settings[slot]
+  local was_running = (ctx.drone_is_running and ctx.drone_is_running(slot)) or false
 
-  -- 2) Load one of the demo presets (dropdown)
-  params:add_option(
-    "preset_load",
-    "Load demo (picker)",
-    {"—","LFO Reso (demo)","LFO Pan (demo)","Beats Dual (demo)"},
-    1
-  )
-  params:set_action("preset_load", function(v)
-    if v > 1 then
-      load_demo_preset(v)
-      -- return selector to "—" so it doesn’t re-load on save
-      params:set("preset_load", 1)
-    end
-  end)
+  if was_running and ctx.stop_drone then ctx.stop_drone(slot) end
+  for k, v in pairs(t or {}) do s[k] = v end
+  if ctx.apply_env then ctx.apply_env(s) end
+  if ctx.apply_drone_mix then ctx.apply_drone_mix(slot) end
+  if was_running and ctx.launch_drone then ctx.launch_drone(slot) end
+end
 
-  -- 3) One-tap triggers (do the same loads as above)
-  params:add_trigger("preset_load_reso", "Load: LFO Reso (demo)")
-  params:set_action("preset_load_reso", function() load_demo_preset(2) end)
+params:add_option(
+  "musical_preset_load",
+  "Load Musical Preset",
+  {"—","Warm choir bed","Shimmer wash","Harmonic organ","Dark glacier"},
+  1
+)
 
-  params:add_trigger("preset_load_pan", "Load: LFO Pan (demo)")
-  params:set_action("preset_load_pan", function() load_demo_preset(3) end)
+params:set_action("musical_preset_load", function(v)
+  if v == 1 then return end
 
-  params:add_trigger("preset_load_beats", "Load: Beats Dual (demo)")
-  params:set_action("preset_load_beats", function() load_demo_preset(4) end)
+  if v == 2 then
+    -- 1) Warm choir bed
+    _set_drone(1, {waveform=2, partials=7, detune=0.35, attack=4.0, decay=1.0, sustain=0.85, release=14.0, base_hz=220, mix=0.80})
+    _set_drone(2, {waveform=2, partials=6, detune=0.28, attack=4.0, decay=1.0, sustain=0.85, release=14.0, base_hz=330, mix=0.70})
+    params:set("lfo_on", 2); params:set("lfo_target", 1); params:set("lfo_wave", 1); params:set("lfo_freq", 0.25); params:set("lfo_depth", 0.75)
+    params:set("fx_cutoff", 3500); params:set("fx_reson", 0.32); params:set("fx_chorus", 0.22)
+    params:set("fx_revmix", 0.30); params:set("fx_revroom", 0.70); params:set("fx_revdamp", 0.45); params:set("fx_noise", 0.04)
+    params:set("sub_level", 0.05); params:set("sub_wave", 1); params:set("sub_detune", 0.0)
+
+  elseif v == 3 then
+    -- 2) Shimmer wash
+    _set_drone(1, {waveform=3, partials=9, detune=0.20, attack=2.5, decay=1.0, sustain=0.85, release=10.0, mix=0.75})
+    _set_drone(2, {waveform=4, partials=5, detune=0.15, attack=2.5, decay=1.0, sustain=0.85, release=10.0, mix=0.75})
+    params:set("lfo_on", 2); params:set("lfo_target", 3); params:set("lfo_wave", 2); params:set("lfo_freq", 0.08); params:set("lfo_depth", 0.70)
+    params:set("fx_cutoff", 7000); params:set("fx_reson", 0.22); params:set("fx_chorus", 0.28)
+    params:set("fx_revmix", 0.32); params:set("fx_revroom", 0.70); params:set("fx_revdamp", 0.40); params:set("fx_noise", 0.08)
+    params:set("sub_level", 0.25); params:set("sub_wave", 2); params:set("sub_detune", 0.3)
+
+  elseif v == 4 then
+    -- 3) Harmonic organ  (B = 5th above A; leave base_hz as-is unless you want to set it)
+    _set_drone(1, {waveform=4, partials=6, detune=0.15, attack=1.5, decay=1.0, sustain=0.90, release=8.0,  mix=0.85})
+    _set_drone(2, {waveform=4, partials=4, detune=0.12, attack=1.5, decay=1.0, sustain=0.90, release=8.0,  mix=0.75})
+    params:set("lfo_on", 2); params:set("lfo_target", 1); params:set("lfo_wave", 1); params:set("lfo_freq", 0.18); params:set("lfo_depth", 0.60)
+    params:set("fx_cutoff", 2800); params:set("fx_reson", 0.40); params:set("fx_chorus", 0.18)
+    params:set("fx_revmix", 0.25); params:set("fx_revroom", 0.65); params:set("fx_revdamp", 0.45); params:set("fx_noise", 0.03)
+    params:set("sub_level", 0.00)
+
+  elseif v == 5 then
+    -- 4) Dark glacier
+    _set_drone(1, {waveform=3, partials=5, detune=0.45, attack=5.0, decay=1.0, sustain=0.85, release=18.0, base_hz=65,  mix=0.70})
+    _set_drone(2, {waveform=2, partials=7, detune=0.25, attack=5.0, decay=1.0, sustain=0.85, release=18.0, base_hz=131, mix=0.60})
+    params:set("lfo_on", 2); params:set("lfo_target", 2); params:set("lfo_wave", 1); params:set("lfo_freq", 0.08); params:set("lfo_depth", 0.35)
+    params:set("fx_cutoff", 2000); params:set("fx_reson", 0.35); params:set("fx_chorus", 0.20)
+    params:set("fx_revmix", 0.35); params:set("fx_revroom", 0.80); params:set("fx_revdamp", 0.55); params:set("fx_noise", 0.05)
+    params:set("sub_level", 0.30); params:set("sub_wave", 2); params:set("sub_detune", 0.4)
+  end
+
+  if ctx.set_engine_mix_and_fx then ctx.set_engine_mix_and_fx() end
+  if ctx.redraw then ctx.redraw() end
+
+  -- return selector to neutral so it doesn’t reload on save
+  params:set("musical_preset_load", 1)
+end)
+
+
 
   ----------------------------------------------------------------
   -- GROUP 1: Mix & Sub  (4 params)
@@ -412,6 +332,7 @@ function Params.setup(ctx)
     if ctx.apply_drone_mix then ctx.apply_drone_mix(2) end
     if ctx.redraw then ctx.redraw() end
   end)
-end
 
+  
+end
 return Params

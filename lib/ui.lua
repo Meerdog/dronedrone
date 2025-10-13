@@ -232,6 +232,33 @@ function UI.draw_mix(names, values, sel)
     screen.text(caret .. names[i] .. ": " .. values[i])
   end
 end
+----------------------------------------------------------------
+-- Simple centered picker overlay (title + list; sel = 1-based index in 'names')
+----------------------------------------------------------------
+
+function UI.draw_preset_picker(title, names, sel)
+  screen.level(15)
+  screen.rect(8, 8, 112, 48)  -- frame
+  screen.stroke()
+
+  screen.move(64, 16); screen.level(15); screen.font_size(8); screen.text_center(title)
+
+  local y = 26
+  for i, name in ipairs(names) do
+    local active = (i == sel)
+    screen.level(active and 15 or 5)
+    screen.move(64, y); screen.text_center(name)
+    y = y + 9
+    if y > 54 then break end
+  end
+
+----------------------------------------------------------------
+  -- footer hint
+----------------------------------------------------------------
+
+  screen.level(6); screen.move(64, 58); screen.text_center("K2: load   K3: close  E2: select")
+end
+
 
 ----------------------------------------------------------------
 -- Vertical status lamps (A, B, 1, 2) with slim left line

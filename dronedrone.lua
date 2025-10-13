@@ -6,7 +6,7 @@
 --   K2 = toggle the focused thing (drone or beat)
 --   K3 = global PANIC (kills all drones/voices, stops beats)
 --   K1+K3 = save params to autosave
---
+--   K2+K3 = open presets
 -- Engine: Dromedary2 (SC). Mix control uses setLevelRange/noteOffRange for safety.
 
 engine.name = "Dromedary2"
@@ -33,6 +33,8 @@ local VOICE_SPAN = 32
 -- UI state
 local tab_selected, param_selected = 1, 1
 local k1_held = false
+local preset_ui = { active = false, sel = 1 }
+
 -- prevents a double K2 press from immediately re-triggering
 -- (note: not currently used; leaving here if you want stricter debouncing)
 local last_toggle = {0, 0}
@@ -331,6 +333,29 @@ local function start_beat2()
   end)
 end
 
+local function musical_preset_names()
+  local p = params:lookup_param("musical_preset_load")
+  if p and p.options then
+    -- drop the leading "—"
+    local out = {}
+    for i=2,#p.options do table.insert(out, p.options[i]) end
+    if #out == 0 then out = {"(none)"} end
+    return out
+  end
+  return {"(none)"}
+end
+
+local function open_preset_picker()
+  local names = musical_preset_names()
+  preset_ui.active = true
+  preset_ui.sel = 1  -- first actual preset
+  redraw()
+end
+
+local function close_preset_picker()
+  preset_ui.active = false
+  redraw()
+end
 
 -- =========================================================
 -- Autosave helper
@@ -453,7 +478,11 @@ function redraw()
     if Grid and Grid.redraw then Grid.redraw() end
   UI.draw_frame()
   UI.draw_tabs(tab_titles, tab_selected)
-
+  if preset_ui.active then
+    UI.draw_preset_picker("Musical Presets", musical_preset_names(), preset_ui.sel)
+    screen.update()
+    return
+  end
 if tab_selected <= 2 then
   -- Drone pages A/B — with ON checkbox (no Release param)
   local s = drones_settings[tab_selected]
@@ -556,66 +585,78 @@ local function drone_is_running(i)
 end
 
 function enc(n, d)
+  -- Preset picker overlay: E2 scrolls; swallow others
+  if preset_ui.active then
+    if n == 2 then
+      local names = musical_preset_names()
+      if #names > 0 then
+        preset_ui.sel = util.wrap(preset_ui.sel + d, 1, #names)
+        redraw()
+      end
+    end
+    return
+  end
+
   if n == 1 then
     -- E1: change page
     tab_selected = util.wrap(tab_selected + d, 1, 6)
     param_selected = 1
 
   elseif tab_selected <= 2 then
-  if n == 2 then
-    -- move selection across 8 items: On, Base, Parts, Wave, Det, A, D, S
-    param_selected = util.wrap(param_selected + d, 1, 8)
+    -- Drone pages A/B
+    if n == 2 then
+      -- On, Base, Parts, Wave, Det, A, D, S
+      param_selected = util.wrap(param_selected + d, 1, 8)
 
-  elseif n == 3 then
-    local i = tab_selected
-    local s = drones_settings[i]
+    elseif n == 3 then
+      local i = tab_selected
+      local s = drones_settings[i]
 
-    if     param_selected == 1 then
-      -- "On" checkbox toggle (same behavior as K2 on this page)
-      local now = util.time()
-      if s.running then
-        stop_drone(i)
-      else
-        if now - (last_stop[i] or 0) < (STOP_COOLDOWN or 0.30) then return end
-        kill_range(i)
-        launch_drone(i)
+      if     param_selected == 1 then
+        -- toggle On
+        local now = util.time()
+        if s.running then
+          stop_drone(i)
+        else
+          if now - (last_stop[i] or 0) < (STOP_COOLDOWN or 0.30) then return end
+          kill_range(i)
+          launch_drone(i)
+        end
+
+      elseif param_selected == 2 then
+        s.base_hz  = math.max(20, s.base_hz + d)
+
+      elseif param_selected == 3 then
+        s.partials = util.clamp(s.partials + d, 1, 16)
+
+      elseif param_selected == 4 then
+        s.waveform = util.wrap(s.waveform + d, 1, 4)
+
+      elseif param_selected == 5 then
+        s.detune   = util.clamp(s.detune + d*0.05, 0, 10)
+
+      elseif param_selected == 6 then
+        s.attack   = util.clamp(s.attack  + d*0.05, 0.0, 30.0)
+
+      elseif param_selected == 7 then
+        s.decay    = util.clamp(s.decay   + d*0.05, 0.0, 30.0)
+
+      elseif param_selected == 8 then
+        s.sustain  = util.clamp(s.sustain + d*0.02, 0.0, 1.0)
       end
 
-    elseif param_selected == 2 then
-      s.base_hz  = math.max(20, s.base_hz + d)
-
-    elseif param_selected == 3 then
-      s.partials = util.clamp(s.partials + d, 1, 16)
-
-    elseif param_selected == 4 then
-      s.waveform = util.wrap(s.waveform + d, 1, 4)          -- Wave (now #4)
-
-    elseif param_selected == 5 then
-      s.detune   = util.clamp(s.detune + d*0.05, 0, 10)     -- Detune (now #5)
-
-    elseif param_selected == 6 then
-      s.attack   = util.clamp(s.attack  + d*0.05, 0.0, 30.0)
-
-    elseif param_selected == 7 then
-      s.decay    = util.clamp(s.decay   + d*0.05, 0.0, 30.0)
-
-    elseif param_selected == 8 then
-      s.sustain  = util.clamp(s.sustain + d*0.02, 0.0, 1.0)
+      -- apply new ADSR immediately
+      if param_selected >= 6 and param_selected <= 8 then
+        apply_env(s)
+      elseif param_selected >= 2 and param_selected <= 5 then
+        apply_env(s)
+      end
     end
-
-    -- apply new ADSR immediately (Release still exists in the engine; we just don't edit it here)
-    if param_selected >= 6 and param_selected <= 8 then
-      apply_env(s)
-    elseif param_selected == 2 or param_selected == 3 or param_selected == 4 or param_selected == 5 then
-      -- if you want the changes to reflect on relaunch only, you can omit this
-      apply_env(s)
-    end
-  end
-
 
   elseif tab_selected == 3 then
-    -- Beat 1 page
-    if n == 2 then param_selected = util.wrap(param_selected + d, 1, 8)
+    -- Beat 1
+    if n == 2 then
+      param_selected = util.wrap(param_selected + d, 1, 8)
     elseif n == 3 then
       if     param_selected == 1 then
         if beat1_on then stop_beat1() params:set("beat1_run",1) else start_beat1() params:set("beat1_run",2) end
@@ -626,7 +667,7 @@ function enc(n, d)
       elseif param_selected == 4 then
         beat1_rotate = util.clamp(beat1_rotate + d, -64, 64) params:set("beat1_rotate", beat1_rotate) refresh_beat1_pat()
       elseif param_selected == 5 then
-        beat1_div_ix = util.wrap(beat1_div_ix + d, 1, #beat_divs) params:set("beat1_div", beat1_div_ix)
+        beat1_div_ix = util.wrap(beat1_div_ix + d, 1, #beat_divs) params:set("beat1_div_ix", beat1_div_ix)
       elseif param_selected == 6 then
         beat1_kick_hz = util.clamp(beat1_kick_hz + d, 20, 120) params:set("beat1_tune", beat1_kick_hz)
       elseif param_selected == 7 then
@@ -637,8 +678,9 @@ function enc(n, d)
     end
 
   elseif tab_selected == 4 then
-    -- Beat 2 page
-    if n == 2 then param_selected = util.wrap(param_selected + d, 1, 8)
+    -- Beat 2
+    if n == 2 then
+      param_selected = util.wrap(param_selected + d, 1, 8)
     elseif n == 3 then
       if     param_selected == 1 then
         if beat2_on then stop_beat2() params:set("beat2_run",1) else start_beat2() params:set("beat2_run",2) end
@@ -649,7 +691,7 @@ function enc(n, d)
       elseif param_selected == 4 then
         beat2_rotate = util.clamp(beat2_rotate + d, -64, 64) params:set("beat2_rotate", beat2_rotate) refresh_beat2_pat()
       elseif param_selected == 5 then
-        beat2_div_ix = util.wrap(beat2_div_ix + d, 1, #beat_divs) params:set("beat2_div", beat2_div_ix)
+        beat2_div_ix = util.wrap(beat2_div_ix + d, 1, #beat_divs) params:set("beat2_div_ix", beat2_div_ix)
       elseif param_selected == 6 then
         beat2_kick_hz = util.clamp(beat2_kick_hz + d, 20, 120) params:set("beat2_tune", beat2_kick_hz)
       elseif param_selected == 7 then
@@ -660,34 +702,30 @@ function enc(n, d)
     end
 
   elseif tab_selected == 5 then
-  -- Mod page: 10 items total
-  if n == 2 then
-    param_selected = util.wrap(param_selected + d, 1, 10)
-  elseif n == 3 then
-    if     param_selected == 1 then -- LFO toggle
-      lfo_on = not lfo_on
-      if params.lookup and params.lookup["lfo_on"] then
-        params:set("lfo_on", lfo_on and 2 or 1)  -- {"off","on"}
+    -- Mod page: 10 items total (1..10)
+    if n == 2 then
+      param_selected = util.wrap(param_selected + d, 1, 10)
+    elseif n == 3 then
+      if     param_selected == 1 then
+        lfo_on = not lfo_on
+        if params.lookup and params.lookup["lfo_on"] then
+          params:set("lfo_on", lfo_on and 2 or 1)
+        end
+      elseif param_selected == 2 then lfo_target    = util.wrap(lfo_target + d, 1, 3)               params:set("lfo_target", lfo_target)
+      elseif param_selected == 3 then lfo_wave      = util.wrap(lfo_wave + d, 1, 4)                 params:set("lfo_wave",   lfo_wave)
+      elseif param_selected == 4 then lfo_freq      = util.clamp(lfo_freq + d*0.1, 0, 40)           params:set("lfo_freq",   lfo_freq)
+      elseif param_selected == 5 then lfo_depth     = util.clamp(lfo_depth + d*0.02, 0, 1)          params:set("lfo_depth",  lfo_depth)
+      elseif param_selected == 6 then subosc_level  = util.clamp(subosc_level + d*0.05, 0, 1)       params:set("sub_level",  subosc_level)
+      elseif param_selected == 7 then subosc_wave   = util.wrap(subosc_wave + d, 1, 4)              params:set("sub_wave",   subosc_wave)
+      elseif param_selected == 8 then subosc_detune = util.clamp(subosc_detune + d*0.1, 0, 12)      params:set("sub_detune", subosc_detune)
+      elseif param_selected == 9 then rvb_mix       = util.clamp(rvb_mix + d*0.02, 0, 1)            params:set("fx_revmix",  rvb_mix)
+      elseif param_selected == 10 then noise_level  = util.clamp(noise_level + d*0.02, 0, 1)        params:set("fx_noise",   noise_level)
       end
-
-    elseif param_selected == 2 then lfo_target    = util.wrap(lfo_target + d, 1, 3)               params:set("lfo_target", lfo_target)
-    elseif param_selected == 3 then lfo_wave      = util.wrap(lfo_wave + d, 1, 4)                 params:set("lfo_wave",   lfo_wave)
-    elseif param_selected == 4 then lfo_freq      = util.clamp(lfo_freq + d*0.1, 0, 40)           params:set("lfo_freq",   lfo_freq)
-    elseif param_selected == 5 then lfo_depth     = util.clamp(lfo_depth + d*0.02, 0, 1)          params:set("lfo_depth",  lfo_depth)
-
-    elseif param_selected == 6 then subosc_level  = util.clamp(subosc_level + d*0.05, 0, 1)       params:set("sub_level",  subosc_level)
-    elseif param_selected == 7 then subosc_wave   = util.wrap(subosc_wave + d, 1, 4)              params:set("sub_wave",   subosc_wave)
-    elseif param_selected == 8 then subosc_detune = util.clamp(subosc_detune + d*0.1, 0, 12)      params:set("sub_detune", subosc_detune)
-
-    elseif param_selected == 9 then rvb_mix       = util.clamp(rvb_mix + d*0.02, 0, 1)            params:set("fx_revmix",  rvb_mix)
-    elseif param_selected == 10 then noise_level  = util.clamp(noise_level + d*0.02, 0, 1)        params:set("fx_noise",   noise_level)
+      set_engine_mix_and_fx()
     end
-    set_engine_mix_and_fx()
-  end
-
 
   elseif tab_selected == 6 then
-    -- Mix bars (A,B,1,2)
+    -- Mix bars
     if n == 2 then
       param_selected = util.wrap(param_selected + d, 1, 4)
     elseif n == 3 then
@@ -696,17 +734,14 @@ function enc(n, d)
         s.mix = util.clamp((s.mix or 0.7) + d*0.02, 0, 1.5)
         apply_drone_mix(1)
         if params.lookup and params.lookup["Amix"] then params:set("Amix", s.mix) end
-
       elseif param_selected == 2 then
         local s = drones_settings[2]
         s.mix = util.clamp((s.mix or 0.7) + d*0.02, 0, 1.5)
         apply_drone_mix(2)
         if params.lookup and params.lookup["Bmix"] then params:set("Bmix", s.mix) end
-
       elseif param_selected == 3 then
         beat1_amp = util.clamp((beat1_amp or 0.95) + d*0.02, 0, 1.5)
         if params.lookup and params.lookup["beat1_amp"] then params:set("beat1_amp", beat1_amp) end
-
       elseif param_selected == 4 then
         beat2_amp = util.clamp((beat2_amp or 0.95) + d*0.02, 0, 1.5)
         if params.lookup and params.lookup["beat2_amp"] then params:set("beat2_amp", beat2_amp) end
@@ -718,11 +753,35 @@ function enc(n, d)
 end
 
 function key(n, z)
-  if n == 1 then
-    k1_held = (z == 1)
+  if n == 1 then k1_held = (z == 1); return end
+  if n == 2 then k2_held = (z == 1) end
+  if n == 3 then k3_held = (z == 1) end
+  if z ~= 1 then return end
+
+  -- K2+K3 together opens the preset picker
+  if (n == 2 and k3_held) or (n == 3 and k2_held) then
+    open_preset_picker()
     return
   end
-  if z ~= 1 then return end
+
+  -- When picker is open: K2 loads, K3 closes
+  if preset_ui.active then
+    if n == 2 then
+      local ix = preset_ui.sel + 1 -- +1 for leading "—"
+      if params.lookup and params.lookup["musical_preset_load"] then
+        params:set("musical_preset_load", ix)
+      end
+      preset_ui.active = false
+      redraw()
+      return
+    elseif n == 3 then
+      preset_ui.active = false
+      redraw()
+      return
+    end
+  end
+
+  
 
 if n == 2 then
   if tab_selected <= 2 then
@@ -842,6 +901,14 @@ function init()
 end
 
 Grid.setup({
+  -- If the top row appears on the bottom, flip Y:
+Grid.set_flip_y(false),
+
+-- If columns/rows are still swapped, also do:
+-- Grid.set_swap_xy(true)
+
+-- If it mirrors left/right, use:
+-- Grid.set_flip_x(true)
   redraw = redraw,
 
   k1_held = function() return k1_held end,
