@@ -31,7 +31,7 @@ UI.SEP_Y             = 16
 
 -- Default two-column X positions
 UI.X_LEFT            = 3
-UI.X_RIGHT           = 64       -- Right column (generic two-col pages)
+UI.X_RIGHT           = 55       -- Right column (generic two-col pages)
 
 -- Beats + Mod can be tighter if desired:
 UI.BEAT_X_RIGHT      = 55
@@ -51,6 +51,8 @@ UI.PB_MARGIN_X       = 4
 UI.PB_GAP            = 1
 UI.PB_HEIGHT         = 4
 UI.PB_Y              = SCREEN_H - UI.FRAME_MARGIN - UI.PB_HEIGHT
+UI.PRESET_LIST_ROWS = 6
+
 
 ----------------------------------------------------------------
 -- Preconfigured XY presets (two-column pages)
@@ -75,6 +77,7 @@ UI.mod_xy = {
   y0 = UI.BASE_Y0 + UI.CONTENT_Y_OFFSET,
   lh = UI.LINE_HEIGHT
 }
+
 
 ----------------------------------------------------------------
 -- Frame + tabs
@@ -145,7 +148,7 @@ end
 function UI.draw_two_col_split(labels, values, left_count, sel, xy)
   -- Fallbacks for safety
   if not xy or not xy.xL then
-    xy = UI.mod_xy or { xL = 8, xR = 60, y0 = 26, lh = 9 }
+    xy = UI.mod_xy or { xL = 8, xR = 55, y0 = 26, lh = 9 }
   end
   if not UI.draw_two_col then
     -- emergency basic draw to avoid a "blank" page
@@ -232,10 +235,11 @@ function UI.draw_mix(names, values, sel)
     screen.text(caret .. names[i] .. ": " .. values[i])
   end
 end
-----------------------------------------------------------------
--- Simple centered picker overlay (title + list; sel = 1-based index in 'names')
-----------------------------------------------------------------
 
+
+----------------------------------------------------------------
+-- Preset Overlay
+----------------------------------------------------------------
 function UI.draw_preset_picker(title, names, sel)
   screen.level(15)
   screen.rect(8, 8, 112, 48)  -- frame
@@ -252,13 +256,112 @@ function UI.draw_preset_picker(title, names, sel)
     if y > 54 then break end
   end
 
-----------------------------------------------------------------
   -- footer hint
-----------------------------------------------------------------
+  screen.level(6)
+  screen.move(64, 58)
+  screen.text_center("K2: load   K3: close  E2: select")
+end
+-- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-- IMPORTANT: we close draw_preset_picker here.
+-- The overlay code below is now top-level, not nested.
+-- vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
 
-  screen.level(6); screen.move(64, 58); screen.text_center("K2: load   K3: close  E2: select")
+-- ========== PRESET OVERLAY (opaque white bg, black text, 2 lines per item) ==========
+
+-- ========== PRESET OVERLAY (2-pane: names (left) + description (right)) ==========
+
+UI.PRESET_PAD       = 6
+UI.PRESET_ROW_H     = 11         -- row height for names list
+UI.PRESET_LEFT_W    = 60         -- width of the left list pane
+UI.PRESET_GAP       = 4          -- gap between panes
+UI.PRESET_RIGHT_PAD = 6          -- inner padding on the right pane
+
+local function _wrap_lines(s, max_chars_per_line, max_lines)
+  -- simple word wrapper; returns up to max_lines strings
+  s = tostring(s or "")
+  if max_chars_per_line <= 3 then return {s:sub(1, max_chars_per_line)} end
+  local out, line = {}, ""
+  for word in s:gmatch("%S+") do
+    local t = (line == "") and word or (line .. " " .. word)
+    if #t > max_chars_per_line then
+      table.insert(out, line)
+      line = word
+      if #out == (max_lines or 2) then break end
+    else
+      line = t
+    end
+  end
+  if #out < (max_lines or 2) and line ~= "" then table.insert(out, line) end
+  return out
 end
 
+function UI.draw_preset_overlay_2pane(title, names, sel, desc)
+  names = names or {}
+  sel   = math.min(math.max(1, sel or 1), math.max(1, #names))
+
+  local pad = UI.PRESET_PAD
+  local x0  = UI.FRAME_MARGIN + pad
+  local y0  = UI.FRAME_MARGIN + pad
+  local w   = 128 - 2*(UI.FRAME_MARGIN + pad)
+  local h   =  64 - 2*(UI.FRAME_MARGIN + pad)
+
+  -- background (opaque white) + border
+  screen.level(15); screen.rect(x0, y0, w, h); screen.fill()
+  screen.level(2);  screen.rect(x0, y0, w, h); screen.stroke()
+
+  -- title (black)
+  screen.level(0); screen.font_size(8)
+  screen.move(x0 + 4, y0 + 9); screen.text(title or "Presets")
+
+  -- pane geometry
+  local list_x  = x0 + 2
+  local list_y0 = y0 + 14
+  local list_w  = UI.PRESET_LEFT_W
+  local list_h  = h - 18
+  local rows    = math.max(1, math.floor(list_h / UI.PRESET_ROW_H))
+
+  local right_x = list_x + list_w + UI.PRESET_GAP
+  local right_w = w - (right_x - x0) - 2
+
+  -- ensure sel is visible
+  local count = #names
+  local first = 1
+  if count > rows then
+    first = math.min(math.max(1, sel - (rows - 1)), math.max(1, count - rows + 1))
+  end
+
+  -- left list (names)
+  for i = 0, rows - 1 do
+    local idx = first + i
+    if idx > count then break end
+    local y   = list_y0 + i * UI.PRESET_ROW_H
+    local txt = tostring(names[idx] or "")
+    if idx == sel then
+      screen.level(0);  screen.rect(list_x, y - 1, list_w - 2, UI.PRESET_ROW_H - 1); screen.fill()
+      screen.level(15)
+    else
+      screen.level(0)
+    end
+    screen.move(list_x + 3, y + 7); screen.text(txt)
+  end
+
+  -- right description (black on white, always)
+  screen.level(0)
+  screen.font_size(8)
+  local inner_x = right_x + UI.PRESET_RIGHT_PAD
+  local inner_w = right_w - 2*UI.PRESET_RIGHT_PAD
+  -- rough chars-per-line at 6px/char
+  local cpl = math.max(8, math.floor(inner_w / 6))
+  local max_lines = math.floor((list_h - 4) / 8)
+  local lines = _wrap_lines(desc or "", cpl, max_lines)
+
+  local dy = 9
+  local ry = list_y0 + 3
+  for _, line in ipairs(lines) do
+    screen.move(inner_x, ry); screen.text(line)
+    ry = ry + dy
+  end
+end
 
 ----------------------------------------------------------------
 -- Vertical status lamps (A, B, 1, 2) with slim left line

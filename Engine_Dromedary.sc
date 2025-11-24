@@ -1,8 +1,5 @@
-// Engine_Dromedary2.sc — robust arg parsing + live level mix
+// Engine_Dromedary2.sc — drones + impact-style drums with robust args
 // Place in: ~/dust/code/dronedrone/Engine_Dromedary2.sc
-//
-// IMPORTANT: This file is the exact logic you provided, with formatting and
-// explanatory comments only. No functional code changes were made.
 
 Engine_Dromedary2 : CroneEngine {
   var <voices, group;
@@ -10,12 +7,12 @@ Engine_Dromedary2 : CroneEngine {
   // --------------------------------------------------------------------------
   // Global state (mutable parameters cached on the engine side)
   // --------------------------------------------------------------------------
-  var atk = 0.5, dec = 1.0, sus = 0.8, rel = 2.0; // ADSR defaults
+  var atk = 0.5, dec = 1.0, sus = 0.8, rel = 2.0;   // ADSR defaults
   var mainLevel = 1.0, mainWave = 0;                // 0..3: sine/tri/saw/square
   var subLevel = 0.5, subDetune = 0.0, subWave = 0; // semitone spread around sub octave
   var cutoff = 12000, rq = 0.2;                     // 0.05..0.99 (lower = sharper)
   var noiseLevel = 0.1, chorusMix = 0.2;            // noise + stereo chorus
-  var rvbMix = 0.25, rvbRoom = 0.6, rvbDamp = 0.5;  // FreeVerb2 mix/room/damp
+  var rvbMix = 0.25, rvbRoom = 0.6, rvbDamp = 0.5;  // FreeVerb2
 
   // Limiter (global defaults applied to every voice)
   var limitOn = 1, limitThresh = 0.98, limitDur = 0.01;
@@ -23,9 +20,11 @@ Engine_Dromedary2 : CroneEngine {
   *new { ^super.new }
 
   alloc {
-    var lastNumber, lastInt, getNums; // helper readers for robust/forgiving args
+    var lastNumber, lastInt, getNums; // robust readers
+    var logmsg;
 
-    ("[Dromedary2 robust] " ++ this.class.filenameSymbol.asString).postln;
+    logmsg = "[Dromedary2] " ++ this.class.filenameSymbol.asString;
+    logmsg.postln;
 
     // All synths live under this group
     group  = Group.head(Server.default);
@@ -34,12 +33,7 @@ Engine_Dromedary2 : CroneEngine {
     voices = IdentityDictionary.new;
 
     // ------------------------------------------------------------------------
-    // Robust readers (work with typed args OR full OSC arrays)
-    // - lastNumber: return the last numeric from a possibly-mixed list
-    // - lastInt:    lastNumber, then round → integer
-    // - getNums:    return all numbers from a mixed list
-    // These helpers allow calls like: engine.cutoff(1200) or engine.cutoff({"cutoff",1200})
-    // or even engine.cutoff({"cutoff", 1, 2, 3, 1200}).
+    // Robust readers (typed args or OSC arrays)
     // ------------------------------------------------------------------------
     lastNumber = { |arglist, default=0.0|
       var lst, num;
@@ -72,115 +66,213 @@ Engine_Dromedary2 : CroneEngine {
 
     // ------------------------------------------------------------------------
     // DRONE VOICE SynthDef
-    // - Per-voice ADSR + main waveform + sub-osc blend + noise + LPF + chorus
-    // - FreeVerb2 on the tail, optional Limiter at the output
     // ------------------------------------------------------------------------
- 
-// --- DRONE VOICE ---
-SynthDef(\dromedaryVoice2, { |out=0, id=0, freq=220, amp=0.5, gate=1,
-  atk=0.5, dec=1.0, sus=0.8, rel=2.0,
-  mainLevel=1.0, mainWave=0,
-  subLevel=0.5, subDetune=0.0, subWave=0,
-  cutoff=12000, rq=0.2,
-  noiseLevel=0.1, chorusMix=0.2,
-  rvbMix=0.25, rvbRoom=0.6, rvbDamp=0.5,
-  // limiter args
-  limitOn=1, limitThresh=0.98, limitDur=0.01,
-  // NEW: pan + post-fx level
-  pan=0, level=1.0 |
-
-  var env, mainOsc, subBase, detRatio, subUp, subDn, subMix, noise,
-      pre, filt, maxDelay, lfo1, lfo2, wetL, wetR, chorus, envd,
-      balanced, withVerb, outSig;
-
-  env = Env.adsr(atk, dec, sus, rel).kr(gate, doneAction:2);
-
-  mainOsc = Select.ar(mainWave.clip(0,3), [
-    SinOsc.ar(freq), LFTri.ar(freq), Saw.ar(freq), Pulse.ar(freq, 0.5)
-  ]) * mainLevel;
-
-  subBase  = freq * 0.5;
-  detRatio = (2 ** (subDetune / 12)).max(1.0);
-  subUp = Select.ar(subWave.clip(0,3), [
-    SinOsc.ar(subBase * detRatio), LFTri.ar(subBase * detRatio),
-    Saw.ar(subBase * detRatio),    Pulse.ar(subBase * detRatio, 0.5)
-  ]);
-  subDn = Select.ar(subWave.clip(0,3), [
-    SinOsc.ar(subBase / detRatio), LFTri.ar(subBase / detRatio),
-    Saw.ar(subBase / detRatio),    Pulse.ar(subBase / detRatio, 0.5)
-  ]);
-  subMix = ((subUp + subDn) * 0.5) * subLevel;
-
-  noise = WhiteNoise.ar(noiseLevel);
-
-  pre  = (mainOsc + subMix + noise) * amp;
-  filt = RLPF.ar(pre, cutoff, rq.clip(0.05, 0.99));
-
-  maxDelay = 0.02;
-  lfo1 = SinOsc.kr(0.13 + (id % 5) * 0.01, 0, 0.003, 0.004);
-  lfo2 = SinOsc.kr(0.17 + (id % 7) * 0.008, 0, 0.004, 0.006);
-  wetL = DelayC.ar(filt, maxDelay, lfo1);
-  wetR = DelayC.ar(filt, maxDelay, lfo2);
-  chorus = (filt ! 2) * (1 - chorusMix) + [wetL, wetR] * chorusMix;
-
-  envd = chorus * env;
-
-  // stereo pan then reverb
-  balanced = Balance2.ar(envd[0], envd[1], pan.clip(-1, 1));
-  withVerb = FreeVerb2.ar(balanced[0], balanced[1], rvbMix, rvbRoom, rvbDamp);
-
-  // post-chain level for Mix page
-  withVerb = withVerb * level;
-
-  // limiter (UGen-safe select)
-  outSig = Select.ar(
-    (limitOn > 0),
-    [ withVerb, Limiter.ar(withVerb, limitThresh, limitDur) ]
-  );
-
-  Out.ar(out, outSig);
-}).add;
-
-    // ------------------------------------------------------------------------
-    // 808-ish KICK SynthDef
-    // - Simple sine body with click, light tanh drive, optional limiter
-    // ------------------------------------------------------------------------
-    SynthDef(\dromedaryKick2, { |out=0, amp=0.9, tune=48, decay=0.60, bend=2.2, click=0.03, body=1.0, tone=100,
+    SynthDef(\dromedaryVoice2, { |out=0, id=0, freq=220, amp=0.5, gate=1,
+      atk=0.5, dec=1.0, sus=0.8, rel=2.0,
+      mainLevel=1.0, mainWave=0,
+      subLevel=0.5, subDetune=0.0, subWave=0,
+      cutoff=12000, rq=0.2,
+      noiseLevel=0.1, chorusMix=0.2,
+      rvbMix=0.25, rvbRoom=0.6, rvbDamp=0.5,
       // limiter args
-      limitOn=1, limitThresh=0.98, limitDur=0.01 |
-      var env, pEnv, toneSig, cEnv, clickSig, sig;  // local buffers
+      limitOn=1, limitThresh=0.98, limitDur=0.01,
+      // pan + post-fx level
+      pan=0, level=1.0 |
 
-      // main amp env
+      var env, mainOsc, subBase, detRatio, subUp, subDn, subMix, noise,
+          pre, filt, maxDelay, lfo1, lfo2, wetL, wetR, chorus, envd,
+          balanced, withVerb, outSig;
+
+      env = Env.adsr(atk, dec, sus, rel).kr(gate, doneAction:2);
+
+      mainOsc = Select.ar(mainWave.clip(0,3), [
+        SinOsc.ar(freq), LFTri.ar(freq), Saw.ar(freq), Pulse.ar(freq, 0.5)
+      ]) * mainLevel;
+
+      subBase  = freq * 0.5;
+      detRatio = (2 ** (subDetune / 12)).max(1.0);
+      subUp = Select.ar(subWave.clip(0,3), [
+        SinOsc.ar(subBase * detRatio), LFTri.ar(subBase * detRatio),
+        Saw.ar(subBase * detRatio),    Pulse.ar(subBase * detRatio, 0.5)
+      ]);
+      subDn = Select.ar(subWave.clip(0,3), [
+        SinOsc.ar(subBase / detRatio), LFTri.ar(subBase / detRatio),
+        Saw.ar(subBase / detRatio),    Pulse.ar(subBase / detRatio, 0.5)
+      ]);
+      subMix = ((subUp + subDn) * 0.5) * subLevel;
+
+      noise = WhiteNoise.ar(noiseLevel);
+
+      pre  = (mainOsc + subMix + noise) * amp;
+      filt = RLPF.ar(pre, cutoff, rq.clip(0.05, 0.99));
+
+      // light chorus
+      maxDelay = 0.02;
+      lfo1 = SinOsc.kr(0.13 + (id % 5) * 0.01, 0, 0.003, 0.004);
+      lfo2 = SinOsc.kr(0.17 + (id % 7) * 0.008, 0, 0.004, 0.006);
+      wetL = DelayC.ar(filt, maxDelay, lfo1);
+      wetR = DelayC.ar(filt, maxDelay, lfo2);
+      chorus = (filt ! 2) * (1 - chorusMix) + [wetL, wetR] * chorusMix;
+
+      envd = chorus * env;
+
+      // stereo pan then reverb
+      balanced = Balance2.ar(envd[0], envd[1], pan.clip(-1, 1));
+      withVerb = FreeVerb2.ar(balanced[0], balanced[1], rvbMix, rvbRoom, rvbDamp);
+
+      // post-chain level
+      withVerb = withVerb * level;
+
+      // limiter (UGen-safe select)
+      outSig = Select.ar(
+        (limitOn > 0),
+        [ withVerb, Limiter.ar(withVerb, limitThresh, limitDur) ]
+      );
+
+      Out.ar(out, outSig);
+    }).add;
+
+    // ------------------------------------------------------------------------
+    // DRUMS — impact-style
+    // ------------------------------------------------------------------------
+
+    // --- KICK (808-ish)
+    SynthDef(\dromedaryKick2, { |out=0, amp=0.9, tune=48, decay=0.60, bend=2.2, click=0.03, body=1.0, tone=100,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var env, pEnv, toneSig, cEnv, clickSig, sig;
+
       env  = Env.perc(0.002, decay, 1.0, curve:-6).ar(doneAction:2);
-
-      // pitch env
       pEnv = Env([tune * bend, tune * 1.1, tune], [0.03, decay - 0.03], curve:[-8, -5]).ar;
 
-      // body
       toneSig = SinOsc.ar(pEnv) * env * body;
       toneSig = LPF.ar(toneSig, tone.max(60));
       toneSig = HPF.ar(toneSig, 25);
 
-      // click
       cEnv = Env.perc(0.0005, 0.012).ar;
       clickSig = LPF.ar(WhiteNoise.ar(click) * cEnv, 3000);
 
-      // glue + amp
-      sig = toneSig + clickSig;
+      sig = (toneSig + clickSig);
       sig = tanh(sig * 1.2) * amp;
 
-      // limiter (mono), then make stereo
-sig = Select.ar(
-  (limitOn > 0),  // 0 or 1 (kr)
-  [ sig, Limiter.ar(sig, limitThresh, limitDur) ]
-);
-
+      sig = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
       Out.ar(out, sig ! 2);
+    }).add;
+
+    // --- SNARE
+    SynthDef(\dromedarySnare2, { |out=0, level=0.8, tone=340, snappy=1.5, decay=3.2,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var noiseEnv, atkEnv, noise, osc1, osc2, sum, sig;
+      noiseEnv = Env.perc(0.001, decay, 1, -115).ar(doneAction:2);
+      atkEnv   = Env.perc(0.001, decay*0.333, curve:-95).ar;
+      noise    = WhiteNoise.ar;
+      noise    = HPF.ar(noise, 1800);
+      noise    = LPF.ar(noise, 8850);
+      noise    = noise * noiseEnv * snappy;
+      osc1     = SinOsc.ar(189, pi/2) * 0.6;
+      osc2     = SinOsc.ar(tone, pi/2) * 0.7;
+      sum      = (osc1 + osc2) * atkEnv * level * 2;
+      sig      = (noise + sum) * level * 2.5;
+      sig      = HPF.ar(sig, 340);
+      sig      = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    // --- CLOSED HAT
+    SynthDef(\dromedaryCH2, { |out=0, level=0.9, tone=500, decay=1.5,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var env, o1,o2,o3,o4,o5,o6, hi, lo, sig;
+      env = Env.perc(0.005, decay, 1, -30).ar(doneAction:2);
+      o1 = LFPulse.ar(tone + 3.52);   o2 = LFPulse.ar(tone + 166.31);
+      o3 = LFPulse.ar(tone + 101.77); o4 = LFPulse.ar(tone + 318.19);
+      o5 = LFPulse.ar(tone + 611.16); o6 = LFPulse.ar(tone + 338.75);
+      hi = HPF.ar(BPF.ar(o1+o2+o3+o4+o5+o6, 8900, 1), 9000);
+      lo = BHiPass.ar(BBandPass.ar(o1+o2+o3+o4+o5+o6, 8900, 0.8), 9000, 0.3);
+      sig = BPeakEQ.ar(hi + lo, 9700, 0.8, 0.7) * env * level;
+      sig = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    // --- OPEN HAT
+    SynthDef(\dromedaryOH2, { |out=0, level=0.9, tone=400, decay=1.5,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var env1, env2, o1,o2,o3,o4,o5,o6, s, a, b, sum;
+      env1 = Env.perc(0.1, decay, curve:-3).ar(doneAction:2);
+      env2 = Env([0,1,0], [0, decay*5], -150).ar;
+      o1 = LFPulse.ar(tone + 3.52);   o2 = LFPulse.ar(tone + 166.31);
+      o3 = LFPulse.ar(tone + 101.77); o4 = LFPulse.ar(tone + 318.19);
+      o5 = LFPulse.ar(tone + 611.16); o6 = LFPulse.ar(tone + 338.75);
+      s  = o1+o2+o3+o4+o5+o6;
+      s  = BHiShelf.ar(BHiPass4.ar(BPeakEQ.ar(BPF.ar(BLowShelf.ar(s, 990, 2, -3), 7700), 7200, 0.5, 5), 8100, 0.7), 9400, 1, 5);
+      a  = s * env1 * 0.6; b = s * env2;
+      sum = LPF.ar(a + b, 4000) * level * 2;
+      sum = Select.ar((limitOn > 0), [sum, Limiter.ar(sum, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sum, 0));
+    }).add;
+
+    // --- CLAP
+    SynthDef(\dromedaryClap2, { |out=0, level=0.4,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var atkenv, denv, atk, dec, sig;
+      atkenv = Env([0.5,1,0],[0,0.3], -160).ar(doneAction:2);
+      denv   = Env.dadsr(0.016,0,6,0,1,1,-157).ar;
+      atk = WhiteNoise.ar * atkenv * 2;
+      dec = WhiteNoise.ar * denv;
+      sig = HPF.ar(BPF.ar((atk + dec * level), 1062, 0.5), 500) * 1.5;
+      sig = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    // --- RIMSHOT
+    SynthDef(\dromedaryRim2, { |out=0, level=1.0,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var env, tri1, tri2, punch, sig;
+      env  = Env([1,1,0], [0.00272, 0.07], -42).ar(doneAction:2);
+      tri1 = LFTri.ar(1667 * 1.1, 1) * env;
+      tri2 = LFPulse.ar(455  * 1.1, width:0.8) * env;
+      punch= WhiteNoise.ar * env * 0.46;
+      sig  = HPF.ar(LPF.ar(BPeakEQ.ar(tri1 + tri2 + punch, 464, 0.44, 8), 7300), 315) * level;
+      sig  = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    // --- COWBELL
+    SynthDef(\dromedaryCow2, { |out=0, level=0.3,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var atkenv, env, pul1, pul2, atk, body, sig;
+      atkenv = Env.perc(0, 1, 0.1, -215).ar(doneAction:2);
+      env    = Env.perc(0.01, 9.5, 0.7, -90).ar;
+      pul1   = LFPulse.ar(811.16);
+      pul2   = LFPulse.ar(538.75);
+      atk    = (pul1 + pul2) * atkenv * 6;
+      body   = (pul1 + pul2) * env;
+      sig    = HPF.ar(LPF.ar((atk + body) * level, 3500), 250);
+      sig    = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    // --- CLAVES
+    SynthDef(\dromedaryClv2, { |out=0, level=0.2,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var env, sig;
+      env = Env([1,1,0], [0, 0.1], -20).ar(doneAction:2);
+      sig = SinOsc.ar(2500, pi/2) * env * level;
+      sig = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    // --- MID TOM
+    SynthDef(\dromedaryTom2, { |out=0, level=1.0, tone=120, decay=0.4,
+      limitOn=1, limitThresh=0.98, limitDur=0.01|
+      var env, fenv, sig;
+      env  = Env([0.4,1,0],[0, decay, -250]).ar(doneAction:2);
+      fenv = Env([tone*1.3333, tone*1.125, tone],[0.1, 0.5], -4).kr;
+      sig  = SinOsc.ar(fenv, pi/2) * env * level * 2;
+      sig  = Select.ar((limitOn > 0), [sig, Limiter.ar(sig, limitThresh, limitDur)]);
+      Out.ar(out, Pan2.ar(sig, 0));
     }).add;
 
     // ------------------------------------------------------------------------
     // COMMANDS (robust): named OSC commands exposed to norns Lua
-    // Each command accepts either typed args or an OSC array payload.
     // ------------------------------------------------------------------------
 
     // Envelope
@@ -209,11 +301,7 @@ sig = Select.ar(
     this.addCommand("reverbRoom", "f", { |q| rvbRoom = lastNumber.(q, rvbRoom).clip(0,1) });
     this.addCommand("reverbDamp", "f", { |q| rvbDamp = lastNumber.(q, rvbDamp).clip(0,1) });
 
-    // ----------------------------------------------------------------------
     // noteOn: start/replace a voice at a specific id; ensures no stacks
-    // - Args (robust): id, freq, amp (can arrive wrapped in arrays)
-    // - If a voice already exists at id, it is freed (no tail)
-    // ----------------------------------------------------------------------
     this.addCommand("noteOn", "iff", { |...args|
       var lst, nums, id, freq, amp, old, synth;
 
@@ -235,7 +323,7 @@ sig = Select.ar(
       old = voices.at(id);
       if(old.notNil) {
         old.set(\gate, 0);
-        old.free;                 // hard-free so there’s no envelope tail
+        old.free;
         voices.removeAt(id);
       };
 
@@ -247,16 +335,13 @@ sig = Select.ar(
         \subLevel, subLevel, \subDetune, subDetune, \subWave, subWave,
         \cutoff, cutoff, \rq, rq,
         \noiseLevel, noiseLevel, \chorusMix, chorusMix,
-        \rvbMix, rvbMix, \rvbRoom, rvbRoom, \rvbDamp, rvbDamp, 
+        \rvbMix, rvbMix, \rvbRoom, rvbRoom, \rvbDamp, rvbDamp,
         \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur
       ]);
       voices[id] = synth;
     });
 
-    // ----------------------------------------------------------------------
-    // freeRange: HARD FREE a contiguous id range [lo..hi]
-    // - Immediate kill (no tail) and remove entries from the voices map
-    // ----------------------------------------------------------------------
+    // free a contiguous id range [lo..hi] (hard)
     this.addCommand("freeRange", "ii", { |lo, hi|
       var rm = Array.new;
       voices.keysValuesDo { |k, s|
@@ -288,9 +373,7 @@ sig = Select.ar(
       killKeys.do({ |k| voices.removeAt(k) });
     });
 
-    // ----------------------------------------------------------------------
     // Live mixing: setLevelRange / setLevelId (post-chain level preferred)
-    // ----------------------------------------------------------------------
     this.addCommand("setLevelRange", "iif", { |q|
       var nums, lo, hi, level, a;
       nums = getNums.(q);
@@ -309,25 +392,6 @@ sig = Select.ar(
       a  = lastNumber.(q, 1.0).clip(0, 1.5);
       s = voices.at(id);
       if(s.notNil) { s.set(\level, a) };
-    });
-
-    // ----------------------------------------------------------------------
-    // Global limiter controls (propagate to every active voice)
-    // NOTE: The following three commands appear twice in your source; kept as-is.
-    // ----------------------------------------------------------------------
-    this.addCommand("limitOn", "i", { |...args|
-      limitOn = lastInt.(args, limitOn).clip(0, 1);
-      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitOn, limitOn) } };
-    });
-
-    this.addCommand("limitThresh", "f", { |...args|
-      limitThresh = lastNumber.(args, limitThresh).clip(0.5, 2.0);
-      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitThresh, limitThresh) } };
-    });
-
-    this.addCommand("limitDur", "f", { |...args|
-      limitDur = lastNumber.(args, limitDur).clip(0.0, 0.05);
-      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitDur, limitDur) } };
     });
 
     // Optional: pre-chain amp (back-compat with older mixers)
@@ -351,19 +415,7 @@ sig = Select.ar(
       if(s.notNil) { s.set(\amp, a) };
     });
 
-    // Kick trigger (808-ish)
-    this.addCommand("kick", "fff", { |q|
-      var nums, a, t, d;
-      nums = getNums.(q);
-      a = (nums.size >= 3).if({ nums.at(nums.size-3).asFloat }, { 0.9 });
-      t = (nums.size >= 3).if({ nums.at(nums.size-2).asFloat }, { 48.0 });
-      d = (nums.size >= 3).if({ nums.at(nums.size-1).asFloat }, { 0.60 });
-      Synth.tail(group, \dromedaryKick2, [\amp, a, \tune, t, \decay, d, \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
-    });
-
-    // ----------------------------------------------------------------------
-    // PAN control for a single id and for a range
-    // ----------------------------------------------------------------------
+    // PAN control
     this.addCommand("setPanId", "if", { |id, pan|
       var s = voices.at(id);
       if(s.notNil) { s.set(\pan, pan.clip(-1.0, 1.0)) };
@@ -376,16 +428,101 @@ sig = Select.ar(
       };
     });
 
-    // --- Limiter threshold (apply to all active voices) [duplicate kept]
-    this.addCommand("limitThresh", "f", { |t|
-      var v = t.clip(0.1, 1.5);
-      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitThresh, v) } };
+    // Global limiter controls
+    this.addCommand("limitOn", "i", { |...args|
+      limitOn = lastInt.(args, limitOn).clip(0, 1);
+      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitOn, limitOn) } };
     });
 
-    // (optional) change limiter attack/lookahead globally [duplicate kept]
-    this.addCommand("limitDur", "f", { |d|
-      var v = d.clip(0.001, 0.2);
-      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitDur, v) } };
+    this.addCommand("limitThresh", "f", { |...args|
+      limitThresh = lastNumber.(args, limitThresh).clip(0.5, 2.0);
+      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitThresh, limitThresh) } };
+    });
+
+    this.addCommand("limitDur", "f", { |...args|
+      limitDur = lastNumber.(args, limitDur).clip(0.0, 0.2);
+      voices.do { |assoc| var s = assoc.value; if(s.notNil) { s.set(\limitDur, limitDur) } };
+    });
+
+    // ------------------------------------------------------------------------
+    // Drum triggers (robust arg parsing like kick)
+    // ------------------------------------------------------------------------
+    this.addCommand("kick", "fff", { |q|
+      var nums, a, t, d;
+      nums = getNums.(q);
+      a = (nums.size >= 3).if({ nums.at(nums.size-3).asFloat }, { 0.9 });
+      t = (nums.size >= 3).if({ nums.at(nums.size-2).asFloat }, { 48.0 });
+      d = (nums.size >= 3).if({ nums.at(nums.size-1).asFloat }, { 0.60 });
+      Synth.tail(group, \dromedaryKick2, [\amp, a, \tune, t, \decay, d,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("snare", "fff", { |q|
+      var nums, a, t, d;
+      nums = getNums.(q);
+      a = (nums.size >= 3).if({ nums.at(nums.size-3).asFloat }, { 0.8 });
+      t = (nums.size >= 3).if({ nums.at(nums.size-2).asFloat }, { 340.0 });
+      d = (nums.size >= 3).if({ nums.at(nums.size-1).asFloat }, { 3.2 });
+      Synth.tail(group, \dromedarySnare2, [\level, a, \tone, t, \decay, d,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("ch", "fff", { |q|
+      var nums, a, t, d;
+      nums = getNums.(q);
+      a = (nums.size >= 3).if({ nums.at(nums.size-3).asFloat }, { 0.9 });
+      t = (nums.size >= 3).if({ nums.at(nums.size-2).asFloat }, { 500.0 });
+      d = (nums.size >= 3).if({ nums.at(nums.size-1).asFloat }, { 1.5 });
+      Synth.tail(group, \dromedaryCH2, [\level, a, \tone, t, \decay, d,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("oh", "fff", { |q|
+      var nums, a, t, d;
+      nums = getNums.(q);
+      a = (nums.size >= 3).if({ nums.at(nums.size-3).asFloat }, { 0.9 });
+      t = (nums.size >= 3).if({ nums.at(nums.size-2).asFloat }, { 400.0 });
+      d = (nums.size >= 3).if({ nums.at(nums.size-1).asFloat }, { 1.5 });
+      Synth.tail(group, \dromedaryOH2, [\level, a, \tone, t, \decay, d,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("clap", "f", { |q|
+      var a;
+      a = lastNumber.(q, 0.4).clip(0, 1.5);
+      Synth.tail(group, \dromedaryClap2, [\level, a,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("rimshot", "f", { |q|
+      var a;
+      a = lastNumber.(q, 1.0).clip(0, 1.5);
+      Synth.tail(group, \dromedaryRim2, [\level, a,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("cowbell", "f", { |q|
+      var a;
+      a = lastNumber.(q, 0.3).clip(0, 1.5);
+      Synth.tail(group, \dromedaryCow2, [\level, a,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("claves", "f", { |q|
+      var a;
+      a = lastNumber.(q, 0.2).clip(0, 1.5);
+      Synth.tail(group, \dromedaryClv2, [\level, a,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+    });
+
+    this.addCommand("mt", "fff", { |q|
+      var nums, a, t, d;
+      nums = getNums.(q);
+      a = (nums.size >= 3).if({ nums.at(nums.size-3).asFloat }, { 1.0 });
+      t = (nums.size >= 3).if({ nums.at(nums.size-2).asFloat }, { 120.0 });
+      d = (nums.size >= 3).if({ nums.at(nums.size-1).asFloat }, { 0.4 });
+      Synth.tail(group, \dromedaryTom2, [\level, a, \tone, t, \decay, d,
+        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
     });
 
     // ----------------------------------------------------------------------

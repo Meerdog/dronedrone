@@ -11,8 +11,7 @@ local function ctrl(min, max, warp, step, default, units)
 end
 
 function Params.setup(ctx)
-  params:clear()
-  
+
   ----------------------------------------------------------------
 -- GROUP X: Musical Presets  (1 param)
 ----------------------------------------------------------------
@@ -33,8 +32,11 @@ end
 
 params:add_option(
   "musical_preset_load",
-  "Load Musical Preset",
-  {"—","Warm choir bed","Shimmer wash","Harmonic organ","Dark glacier"},
+  "Load Musical Preset",{
+    "Warm Choir Bed  • tri stacks, slow res LFO",
+    "Shimmer Wash     • saw/square + pan LFO",
+    "Harmonic Fifths  • square stacks, gentle res",
+    "Dark Glacier     • low tri/saw, amp LFO, big verb",},
   1
 )
 
