@@ -81,15 +81,26 @@ Engine_Dromedary2 : CroneEngine {
 
       var env, mainOsc, subBase, detRatio, subUp, subDn, subMix, noise,
           pre, filt, maxDelay, lfo1, lfo2, wetL, wetR, chorus, envd,
-          balanced, withVerb, outSig;
+          balanced, withVerb, outSig,
+          freqLag, cutoffLag, ampCtl, panLag, levelCtl;
 
+      // amplitude envelope (ASDR, de-click on start/stop)
       env = Env.adsr(atk, dec, sus, rel).kr(gate, doneAction:2);
 
+      // smoothed control signals to avoid zipper / clicks
+      freqLag   = Lag.kr(freq,   0.02);  // 20ms pitch glide
+      cutoffLag = Lag.kr(cutoff, 0.02);  // smoothed filter moves
+      ampCtl    = Lag.kr(amp,    0.03);  // gentle amp moves
+      panLag    = Lag.kr(pan,    0.03);
+      levelCtl  = Lag.kr(level,  0.05);  // post-chain level
+
+      // main osc
       mainOsc = Select.ar(mainWave.clip(0,3), [
-        SinOsc.ar(freq), LFTri.ar(freq), Saw.ar(freq), Pulse.ar(freq, 0.5)
+        SinOsc.ar(freqLag), LFTri.ar(freqLag), Saw.ar(freqLag), Pulse.ar(freqLag, 0.5)
       ]) * mainLevel;
 
-      subBase  = freq * 0.5;
+      // sub osc cluster (up/down detune)
+      subBase  = freqLag * 0.5;
       detRatio = (2 ** (subDetune / 12)).max(1.0);
       subUp = Select.ar(subWave.clip(0,3), [
         SinOsc.ar(subBase * detRatio), LFTri.ar(subBase * detRatio),
@@ -101,10 +112,12 @@ Engine_Dromedary2 : CroneEngine {
       ]);
       subMix = ((subUp + subDn) * 0.5) * subLevel;
 
+      // noise
       noise = WhiteNoise.ar(noiseLevel);
 
-      pre  = (mainOsc + subMix + noise) * amp;
-      filt = RLPF.ar(pre, cutoff, rq.clip(0.05, 0.99));
+      // pre-filter mix with smoothed amp
+      pre  = (mainOsc + subMix + noise) * ampCtl;
+      filt = RLPF.ar(pre, cutoffLag, rq.clip(0.05, 0.99));
 
       // light chorus
       maxDelay = 0.02;
@@ -117,11 +130,11 @@ Engine_Dromedary2 : CroneEngine {
       envd = chorus * env;
 
       // stereo pan then reverb
-      balanced = Balance2.ar(envd[0], envd[1], pan.clip(-1, 1));
+      balanced = Balance2.ar(envd[0], envd[1], panLag.clip(-1, 1));
       withVerb = FreeVerb2.ar(balanced[0], balanced[1], rvbMix, rvbRoom, rvbDamp);
 
-      // post-chain level
-      withVerb = withVerb * level;
+      // post-chain level + built-in headroom (0.5)
+      withVerb = withVerb * levelCtl * 0.5;
 
       // limiter (UGen-safe select)
       outSig = Select.ar(
@@ -319,12 +332,10 @@ Engine_Dromedary2 : CroneEngine {
         id = 1001; freq = 220.0; amp = 0.5;
       };
 
-      // de-dupe: if a voice already exists at this id, kill it first
+      // de-dupe: if a voice already exists at this id, soft-kill it first
       old = voices.at(id);
       if(old.notNil) {
-        old.set(\gate, 0);
-        old.free;
-        voices.removeAt(id);
+        old.set(\gate, 0);  // let its envelope release instead of instant free
       };
 
       // Spawn fresh voice with all current engine-global settings
@@ -505,14 +516,14 @@ Engine_Dromedary2 : CroneEngine {
       var a;
       a = lastNumber.(q, 0.3).clip(0, 1.5);
       Synth.tail(group, \dromedaryCow2, [\level, a,
-        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+        \limitOn, limitOn, \limitThresh, limitThresh, limitDur]);
     });
 
     this.addCommand("claves", "f", { |q|
       var a;
       a = lastNumber.(q, 0.2).clip(0, 1.5);
       Synth.tail(group, \dromedaryClv2, [\level, a,
-        \limitOn, limitOn, \limitThresh, limitThresh, \limitDur, limitDur]);
+        \limitOn, limitOn, \limitThresh, limitThresh, limitDur]);
     });
 
     this.addCommand("mt", "fff", { |q|
