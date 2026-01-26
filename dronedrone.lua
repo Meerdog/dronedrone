@@ -1,9 +1,18 @@
---           DroneDrums
+-- DroneDrums - Norns Script
 --
--- 
--- Two drifting drones (A/B) 
---  two Euclidean beatmakers (1/2).
--- K2 = context toggle & K3 = PANIC
+-- Description:
+--   Two independently controllable drifting drones (A/B) paired with
+--   two Euclidean rhythm-based beatmakers (1/2).
+--
+-- Controls:
+--   E1: Navigate between tabs
+--   E2: Select parameter
+--   E3: Adjust parameter value
+--   K1: Hold for secondary functions
+--   K2: Context toggle (start/stop drone or beat depending on current tab)
+--   K3: PANIC - kill all sound immediately
+--   K1+K2: Toggle options/advanced settings for current entity
+--   K1+K3: Save current state
 
 
 engine.name = "Dromedary2"
@@ -18,16 +27,17 @@ local Grid    = include("lib/grid")
 local Presets = include("lib/presets") -- names(), desc(i), get(i) or apply(i)
 
 ----------------------------------------------------------------
--- Config / State
+-- Configuration and Global State Variables
+-- Defines core constants and initial state for drones and beats
 ----------------------------------------------------------------
 local DRONES = 2
 local TAB_TITLES = {"A","B","1","2","M","Mix","P"}
 
--- voice id layout (avoid A/B collisions)
+-- Voice ID offset layout - prevents drone A/B from triggering same engine voices
 local VOICE_SPAN = (C and C.VOICE_SPAN) or 32
 local drone_voice_offset = (C and C.DRONE_VOICE_OFFSET) or {0, 32}
 
--- CHORDS from constants (fallback if missing)
+-- Chord definitions - loaded from constants with fallback presets if unavailable
 local CHORDS = (C and C.CHORDS)
 if not (CHORDS and #CHORDS > 0) then
   CHORDS = {
@@ -43,7 +53,7 @@ if not (CHORDS and #CHORDS > 0) then
   }
 end
 
--- Drum lists / tuning rules
+-- Drum sound definitions and tuning rules - some drums (Clap, Rim, etc.) ignore tuning
 local DRUM_NAMES = (C and C.DRUM_NAMES) or {"Kick","Snare","CH","OH","Clap","Rim","Cow","Clv","Tom"}
 local DRUM_TUNELESS = (C and C.DRUM_TUNELESS) or { Clap=true, Rim=true, Cow=true, Clv=true }
 local function drum_name(ix)
@@ -52,7 +62,9 @@ local function drum_name(ix)
 end
 
 ----------------------------------------------------------------
--- Options mode (per-entity toggled by K1+K2 or grid last row)
+-- Options Mode System
+-- Per-entity advanced settings toggled by K1+K2 or grid bottom row
+-- Each drone/beat has its own options panel with extended parameters
 ----------------------------------------------------------------
 local options_mode = { A=false, B=false, ["1"]=false, ["2"]=false }
 local function is_entity_page(ix)
@@ -67,14 +79,17 @@ local function entity_key_for_tab(i)
 end
 
 ----------------------------------------------------------------
--- Anti-pop config (stagger + short level ramp)
+-- Anti-Pop Configuration
+-- Staggers voice startup and ramps levels to prevent audio clicks/pops
+-- when drones start or stop
 ----------------------------------------------------------------
 local START_STAGGER_SEC = 0.004
 local START_RAMP_SEC    = 0.080
 
 local function _call(fn, ...) if not fn then return false end; return pcall(fn, ...) end
 
--- Feature detection (range setters may not exist on some engines)
+-- Feature detection - checks if engine supports per-voice-range parameter setting
+-- Fallback to global parameters if range methods unavailable
 local HAS_RANGE = {
   cutoff = (engine and (engine.setCutoffRange or engine.setFilterRange)) and true or false,
   reson  = (engine and engine.setResonanceRange) and true or false,
@@ -119,7 +134,9 @@ local function _set_range_reson(slot_idx, r)
 end
 
 ----------------------------------------------------------------
--- Beats (with Delay options)
+-- Beat/Drum Sequencer State
+-- Two independent Euclidean rhythm generators with delay effects
+-- Each beat has steps, fills, rotation, timing division, and per-step options
 ----------------------------------------------------------------
 local beat_divs = {1, 1/2, 1/4, 1/8}
 local beat = {
@@ -137,7 +154,7 @@ local beat = {
   },
 }
 
--- drum triggering
+-- Drum sound triggering - routes to appropriate engine methods based on drum type
 local function trigger_engine_drum(name, amp, tone, dec)
   if     name == "Kick"  then _call(engine.kick,    amp, tone, dec)
   elseif name == "Snare" then _call(engine.snare,   amp, tone, dec)
@@ -152,19 +169,20 @@ local function trigger_engine_drum(name, amp, tone, dec)
 end
 
 ----------------------------------------------------------------
--- UI state / holds
+-- UI State and Key/Encoder Tracking
+-- Manages current tab/parameter selection and key press states
 ----------------------------------------------------------------
 local tab_selected, param_selected = 1, 1
 local k1_held, k2_held, k3_held = false, false, false
 
--- Presets tab UI
+-- Presets tab UI state - tracks selected preset and scroll position
 local preset_ui = { sel=1, first=1 }
 
--- Options cursors + scroll windows
+-- Options panel cursor positions and scroll window offsets for each entity
 local DRONE_OPTS_CURSOR, DRONE_OPTS_FIRST = { [1]=1, [2]=1 }, { [1]=1, [2]=1 }
 local BEAT_OPTS_CURSOR,  BEAT_OPTS_FIRST  = { [1]=1, [2]=1 }, { [1]=1, [2]=1 }
 
--- Screen / options panel geometry (adjusted to show 3 rows comfortably)
+-- Screen and options panel geometry - optimized to display 3 rows comfortably
 local SCREEN_W, SCREEN_H = 128, 64
 local OPTS_Y0       = 18     -- pushed down a bit (keeps tabs clear)
 local OPTS_LH       = 11     -- tighter row height so we get 3 visible rows
@@ -178,14 +196,15 @@ local function _opts_vis_rows()
   return math.max(1, math.floor(list_h / OPTS_LH))
 end
 
--- Debounce after stop
+-- Debounce timing - prevents rapid re-triggering after stopping drones
 local last_stop = {0,0}
 local STOP_COOLDOWN = 0.30
 local toggle_guard_until = {0,0}
 local smooth_kill_clock = {[1]=nil,[2]=nil}
 
 ----------------------------------------------------------------
--- Mix / FX (params-only) + quick reverb
+-- Mix and Effects Parameters
+-- Global FX settings: sub-oscillator, chorus, noise, filter, reverb
 ----------------------------------------------------------------
 local base_main_level = 1.0
 local subosc_level, subosc_detune, subosc_wave = 0.50, 0.0, 1
@@ -193,7 +212,8 @@ local chorus_mix, noise_level = 0.20, 0.10
 local fx_cutoff, fx_resonance = 12000, 0.20
 local rvb_mix, rvb_room, rvb_damp = 0.20, 0.60, 0.50
 
--- ---- Safety limiter / auto-headroom ----
+-- Safety Limiter / Auto-Headroom Management
+-- Dynamically scales output level based on active voices to prevent clipping
 local safety = { on=true, target_units=2.2, limit_thresh=0.85, limit_dur=0.02 }
 local _safety_scale = 1.0
 local safety_clock = nil
@@ -255,7 +275,9 @@ local function set_engine_mix_and_fx()
 end
 
 ----------------------------------------------------------------
--- Global LFO (Res/Amp/Pan) — audible & Mix tab reflects it
+-- Global LFO System
+-- Modulates resonance, amplitude, or pan across all voices
+-- Changes are both audible and reflected in the Mix tab UI
 ----------------------------------------------------------------
 local lfo_on, lfo_target, lfo_wave, lfo_freq, lfo_depth = true, 1, 1, 2.0, 0.20
 local lfo_clock, lfo_phase = nil, 0.0
@@ -318,7 +340,9 @@ local function start_lfo()
 end
 
 ----------------------------------------------------------------
--- Euclid core + step scheduler (+ delay echoes)
+-- Euclidean Rhythm Generator and Step Scheduler
+-- Generates rhythmic patterns using Euclidean algorithm
+-- Includes delay/echo scheduling for rhythmic repetitions
 ----------------------------------------------------------------
 local function euclid(steps, fills, rotate)
   local pat, bucket = {}, 0
@@ -444,7 +468,9 @@ local function start_beat(i)
 end
 
 ----------------------------------------------------------------
--- Drones (+ per-drone LFO & filters in Options)
+-- Drone Voice System
+-- Two polyphonic drones with independent settings: pitch, voices, detune, ADSR
+-- Each drone has optional per-drone LFO and filter controls accessible in Options mode
 ----------------------------------------------------------------
 local drones = {}
 for i=1,DRONES do
@@ -520,7 +546,8 @@ local function start_drone_lfo(i)
 end
 
 ----------------------------------------------------------------
--- Toggles / lifecycle helpers
+-- Drone Lifecycle Management
+-- Functions for starting, stopping, and toggling drones with smooth fades
 ----------------------------------------------------------------
 local function kill_range(i)
   local base = drone_voice_offset[i] or 0
@@ -657,7 +684,8 @@ local function toggle_drone(i)
 end
 
 ----------------------------------------------------------------
--- Params bridge (FX/LFO/Beats)
+-- Parameters Bridge
+-- Connects Norns params system to internal state for FX, LFO, and beat settings
 ----------------------------------------------------------------
 local function PARAM_SET(key, v)
   if key=="main_level"     then base_main_level = v; set_engine_mix_and_fx(); redraw()
@@ -699,7 +727,9 @@ local function PARAM_SET(key, v)
 end
 
 ----------------------------------------------------------------
--- Presets (P tab) — kills all voices/beats before load
+-- Preset System (P Tab)
+-- Loads/applies musical presets - automatically silences all sounds before loading
+-- to prevent unwanted artifacts during preset transitions
 ----------------------------------------------------------------
 local function kill_all_sound()
   for i=1,DRONES do drone_hard_kill(i) end
@@ -825,7 +855,9 @@ local function apply_preset(ix)
 end
 
 ----------------------------------------------------------------
--- Options UI (auto-vis rows, early scroll, right gutter)
+-- Options Panel UI Rendering
+-- Draws inverted-color options panels with auto-calculated visible rows,
+-- early scrolling behavior, and right gutter to avoid overlapping status lamps
 ----------------------------------------------------------------
 local function _draw_opts_panel_inverted(title_unused, rows, cursor, first)
   rows   = rows or {}
@@ -928,7 +960,8 @@ local function draw_beats_opts(tid)
 end
 
 ----------------------------------------------------------------
--- UI
+-- Main UI Rendering (redraw)
+-- Orchestrates all screen drawing: tabs, parameters, status lamps, patterns
 ----------------------------------------------------------------
 function redraw()
   screen.clear()
@@ -1030,7 +1063,9 @@ function redraw()
 end
 
 ----------------------------------------------------------------
--- Encoders / Keys
+-- Input Handlers: Encoders and Keys
+-- E1: Tab navigation, E2: Parameter selection, E3: Value adjustment
+-- K1: Modifier, K2: Context toggle, K3: Panic, K1+K2: Options toggle
 ----------------------------------------------------------------
 function enc(n, d)
   -- E1: cycle tabs ALWAYS, including P
@@ -1249,7 +1284,9 @@ function key(n, z)
 end
 
 ----------------------------------------------------------------
--- Grid setup (robust attach: defer + hotplug retries)
+-- Grid Controller Setup
+-- Robust grid attachment with deferred initialization and hotplug retry logic
+-- Handles both hardware grid and midigrid enumeration races
 ----------------------------------------------------------------
 local function grid_setup_once()
   if not Grid or not Grid.setup then return end
@@ -1325,7 +1362,7 @@ local function grid_setup_once()
   })
 end
 
--- Defer + retry attaches (handles midigrid enumeration races)
+-- Deferred initialization with multiple retry attempts to handle timing issues
 local function grid_setup_robust()
   clock.run(function()
     clock.sleep(0.20); grid_setup_once()
@@ -1334,7 +1371,7 @@ local function grid_setup_robust()
   end)
 end
 
--- Hot-plug hooks
+-- Hot-plug event handlers - re-initialize grid when devices connect/disconnect
 if midi then
   local _midi_add = midi.add
   midi.add = function(dev, ...)
@@ -1361,7 +1398,9 @@ if grid then
 end
 
 ----------------------------------------------------------------
--- Lifecycle
+-- Script Lifecycle: init() and cleanup()
+-- init: Loads params, sets up engine, starts LFOs and safety limiter
+-- cleanup: Saves state, stops all sounds, releases resources
 ----------------------------------------------------------------
 local function autosave_path() return norns.state.data .. "autosave.pset" end
 local function force_silent_boot()

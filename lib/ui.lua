@@ -53,6 +53,7 @@ UI.PB_HEIGHT         = 4
 UI.PB_Y              = SCREEN_H - UI.FRAME_MARGIN - UI.PB_HEIGHT
 UI.PRESET_LIST_ROWS = 6
 
+UI.FONT_FACE_ID = 1 
 
 ----------------------------------------------------------------
 -- Preconfigured XY presets (two-column pages)
@@ -360,6 +361,31 @@ function UI.draw_preset_overlay_2pane(title, names, sel, desc)
   for _, line in ipairs(lines) do
     screen.move(inner_x, ry); screen.text(line)
     ry = ry + dy
+  end
+end
+----------------------------------------------------------------
+-- Inverted options list (white bg, black text; selected row inverted) 
+----------------------------------------------------------------
+function UI.draw_inverted_panel(title, rows, cursor, y0, row_h)
+  y0    = y0 or 14
+  row_h = row_h or 8
+
+  -- full white background within frame
+  screen.level(15); screen.rect(1,1,127,63); screen.fill()
+
+  -- title (black)
+  screen.level(0); screen.font_size(8)
+  screen.move(4, 10); screen.text(title or "Options")
+
+  -- rows
+  for i,txt in ipairs(rows or {}) do
+    local y = y0 + (i-1)*row_h
+    if i == cursor then
+      screen.level(0); screen.rect(3, y-6, 122, row_h); screen.fill()
+      screen.level(15); screen.move(7, y); screen.text(txt)
+    else
+      screen.level(0); screen.move(7, y); screen.text(txt)
+    end
   end
 end
 
